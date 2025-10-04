@@ -1,66 +1,132 @@
-# Use the specified RenkuLab base image (Python 3.11)
-ARG RENKU_BASE_IMAGE=renku/renkulab-py:3.11-7922455
-FROM ${RENKU_BASE_IMAGE}
+ARG BASE_IMAGE=jupyter/base-notebook:python-3.10
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIPX_HOME=/opt/pipx \
-    PIPX_BIN_DIR=/usr/local/bin \
-    CHROME_BIN=/usr/bin/google-chrome
+FROM ${BASE_IMAGE} as builder
 
-# Install system dependencies and Google Chrome
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
-        git-lfs \
-        curl \
-        wget \
-        gnupg \
-        ca-certificates \
-        fonts-liberation \
-        libasound2 \
-        libatk-bridge2.0-0 \
-        libatk1.0-0 \
-        libatspi2.0-0 \
-        libdrm2 \
-        libgbm1 \
-        libgtk-3-0 \
-        libnss3 \
-        libx11-xcb1 \
-        xdg-utils \
-    && rm -rf /var/lib/apt/lists/* \
-    && git lfs install --system
-
-# Add Google Chrome repository and install Chrome (stable)
-RUN install -m 0755 -d /etc/apt/keyrings && \
-    wget -qO /etc/apt/keyrings/google-chrome.gpg https://dl.google.com/linux/linux_signing_key.pub && \
-    sh -c 'echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list' && \
-    apt-get update && apt-get install -y --no-install-recommends google-chrome-stable && \
+RUN apt-get update && apt-get install -yq --no-install-recommends \
+    build-essential && \
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip and install pipx
-RUN python -m pip install --upgrade pip pipx
+# remove the nodejs pin if needed - see https://github.com/jupyter/docker-stacks/issues/1990
+RUN sed -i '/nodejs/d' /opt/conda/conda-meta/pinned
 
-# RENKU_VERSION determines the version of the renku CLI
-# Set to a specific version (e.g. 2.8.1) or leave empty to install the latest
-ARG RENKU_VERSION=
+# switch to the notebook user
+USER $NB_USER
+# install jupyterlab, papermill, git extension and renku-jupyterlab-ts
+COPY environment.yml /tmp/environment.yml
+RUN mamba env update -f /tmp/environment.yml && \
+    jupyter labextension disable "@jupyterlab/apputils-extension:announcements" && \
+    rm -rf "/home/${NB_USER}/.cache"
 
-########################################################
-# Do not edit this section and do not add anything below
+# jupyter sets channel priority to strict which often causes very long error messages
+RUN conda config --system --set channel_priority flexible && \
+    conda clean --all -f -y
 
-RUN if command -v renku >/dev/null 2>&1; then pipx uninstall renku || true; fi && \
-    if [ -n "$RENKU_VERSION" ] ; then \
-        pipx install --force "renku==${RENKU_VERSION}"; \
+COPY renku-requirements/requirements.txt /tmp/renku-requirements.txt
+
+RUN mkdir -p "$HOME/.renku/bin" && \
+    virtualenv --no-periodic-update "$HOME/.renku/venv" && \
+    source "$HOME/.renku/venv/bin/activate" && \
+    pip install --no-cache-dir -r /tmp/renku-requirements.txt && \
+    deactivate
+
+FROM $BASE_IMAGE
+
+LABEL maintainer="Swiss Data Science Center <info@datascience.ch>"
+
+USER root
+SHELL [ "/bin/bash", "-c", "-o", "pipefail" ]
+
+# Install additional dependencies and nice-to-have packages
+RUN apt-get update && apt-get install -yq --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    gnupg \
+    graphviz \
+    jq \
+    less \
+    libsm6 \
+    libxext-dev \
+    libxrender1 \
+    libyaml-0-2 \
+    libyaml-dev \
+    lmodern \
+    musl-dev \
+    nano \
+    netcat-traditional \
+    rclone \
+    unzip \
+    vim \
+    openssh-server && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -s /usr/lib/x86_64-linux-musl/libc.so /lib/libc.musl-x86_64.so.1 && \
+    wget -q https://github.com/git-lfs/git-lfs/releases/download/v3.3.0/git-lfs-linux-"$(dpkg --print-architecture)"-v3.3.0.tar.gz -P /tmp && \
+    wget -q  https://github.com/justjanne/powerline-go/releases/download/v1.24/powerline-go-linux-"$(dpkg --print-architecture)" -O /usr/local/bin/powerline-shell && \
+    chmod a+x /usr/local/bin/powerline-shell && \
+    tar -zxvf /tmp/git-lfs-linux-"$(dpkg --print-architecture)"-v3.3.0.tar.gz -C /tmp && \
+    /tmp/git-lfs-3.3.0/install.sh && \
+    rm -rf /tmp/git-lfs*
+
+# Install Google Chrome (amd64)
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    if [ "$arch" = "amd64" ]; then \
+      apt-get update; \
+      apt-get install -y --no-install-recommends curl gnupg ca-certificates; \
+      install -d -m 0755 /etc/apt/keyrings; \
+      curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google-linux.gpg; \
+      echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list; \
+      apt-get update; \
+      apt-get install -y --no-install-recommends google-chrome-stable; \
     else \
-        pipx install --force renku; \
-    fi
+      echo "Skipping Google Chrome installation for architecture: $arch"; \
+    fi; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
 
-USER ${NB_USER}
-WORKDIR /workspace
+USER $NB_USER
 
-# Default command
-CMD ["renku", "--help"]
+# setup sshd
+RUN mkdir -p "$HOME/.ssh" && \
+    touch "$HOME/.ssh/authorized_keys" && \
+    chmod u=rw,g=,o= "$HOME/.ssh/authorized_keys"
 
-########################################################
+# configure bash and shell prompt
+ENV PATH=$HOME/.local/bin:$PATH:$HOME/.renku/bin
+ENV CHROME_BIN=/usr/bin/google-chrome
+COPY --chown=1000:100 bashrc /renku/
+RUN cat "/renku/bashrc" >> "${HOME}/.bashrc"
+
+COPY entrypoint.sh /entrypoint.sh
+
+# Setup ssh keys
+USER root
+RUN mkdir -p /opt/ssh/sshd_config.d /opt/ssh/ssh_host_keys /opt/ssh/pid && \
+    ssh-keygen -q -N "" -t dsa -f /opt/ssh/ssh_host_keys/ssh_host_dsa_key && \
+    ssh-keygen -q -N "" -t rsa -b 4096 -f /opt/ssh/ssh_host_keys/ssh_host_rsa_key && \
+    ssh-keygen -q -N "" -t ecdsa -f /opt/ssh/ssh_host_keys/ssh_host_ecdsa_key && \
+    ssh-keygen -q -N "" -t ed25519 -f /opt/ssh/ssh_host_keys/ssh_host_ed25519_key
+
+COPY sshd_config /opt/ssh/sshd_config
+
+RUN chown -R 0:100 /opt/ssh/ && \
+    chmod -R u=rwX,g=rX,o= /opt/ssh && \
+    chmod -R u=rwX,g=rwX,o= /opt/ssh/pid && \
+    rm -rf /opt/conda
+
+ENTRYPOINT [ "tini", "--", "/entrypoint.sh" ]
+
+CMD [ "jupyter", "server", "--ip", "0.0.0.0" ]
+
+USER $NB_USER
+COPY --chown=1000:100 --from=builder /opt/conda /opt/conda
+COPY --chown=1000:100 --from=builder "$HOME/.renku" "$HOME/.renku"
+RUN ln -s "$HOME/.renku/venv/bin/renku" "$HOME/.renku/bin/renku" && \
+    ln -s "$HOME/.renku/venv/bin/_toil_worker" "$HOME/.renku/bin/"
+
+ARG CONDA_ENVS_DIRS
+ENV CONDA_ENVS_DIRS=${CONDA_ENVS_DIRS:-/opt/conda/envs}
+WORKDIR $HOME
