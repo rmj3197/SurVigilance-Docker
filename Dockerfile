@@ -3,11 +3,14 @@
 
 FROM renku/renkulab-py:3.11-0.25.0 as builder
 
+# RENKU_VERSION determines the version of the renku CLI
+# that will be used in this image. To find the latest version,
+# visit https://pypi.org/project/renku/#history.
 ARG RENKU_VERSION={{ __renku_version__ | default("2.7.0") }}
 
-# Install the desired Renku version into the virtualenv
+# Install renku from pypi or from github if a dev version
 RUN if [ -n "$RENKU_VERSION" ] ; then \
-        source /root/.renku/venv/bin/activate ; \
+        source .renku/venv/bin/activate ; \
         currentversion=$(renku --version) ; \
         if [ "$RENKU_VERSION" != "$currentversion" ] ; then \
             pip uninstall renku -y ; \
@@ -19,9 +22,7 @@ RUN if [ -n "$RENKU_VERSION" ] ; then \
             fi \
         fi \
     fi
-
-########################################################
-#             End Renku install section               #
+#             End Renku install section                #
 ########################################################
 
 FROM renku/renkulab-py:3.11-0.25.0
