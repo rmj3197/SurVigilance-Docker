@@ -4,6 +4,7 @@ FROM debian:bookworm-slim
 ARG DEBIAN_FRONTEND=noninteractive
 ENV SHELL=/bin/bash \
     LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
     CHROME_BIN=/usr/bin/google-chrome
 
 # Base deps + ttyd
